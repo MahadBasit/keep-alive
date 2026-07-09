@@ -1,0 +1,44 @@
+name: keep-alive
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"   # every 10 min: keep P3 Render warm
+    - cron: "0 6 * * *"      # daily: keep both Supabase projects active
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Warm P3 Render
+        run: curl -s -o /dev/null -w "P3 render %{http_code}\n" --max-time 90 https://testimonial-collector.onrender.com/api/health
+
+      - name: Touch P3 Supabase (daily)
+        if: github.event.schedule == '0 6 * * *' || github.event_name == 'workflow_dispatch'
+        run: curl -s -o /dev/null -w "P3 db %{http_code}\n" --max-time 90 https://testimonial-collector.onrender.com/api/embed/keepalive-ping
+
+      - name: Touch P2 Supabase (daily)
+        if: github.event.schedule == '0 6 * * *' || github.event_name == 'workflow_dispatch'
+        run: |
+          if [ -z "${{ secrets.P2_SUPABASE_URL }}" ]; then echo "P2 secrets not set yet - skipping"; exit 0; fi
+          curl -s -o /dev/null -w "P2 db %{http_code}\n" --max-time 30 \
+            -H "apikey: ${{ secrets.P2_SUPABASE_ANON }}" \
+            "${{ secrets.P2_SUPABASE_URL }}/rest/v1/rate_card_items?select=id&limit=1"
+
+  stay-enabled:
+    if: github.event.schedule == '0 6 * * *'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Weekly self-commit so GitHub never disables the schedule
+        run: |
+          if [ "$(date +%u)" = "1" ]; then
+            date > last-ping.txt
+            git config user.name "keepalive-bot"
+            git config user.email "bot@users.noreply.github.com"
+            git add last-ping.txt
+            git commit -m "keepalive $(date +%F)" && git push || echo "nothing to commit"
+          fi
